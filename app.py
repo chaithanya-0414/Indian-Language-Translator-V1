@@ -9,8 +9,7 @@ import tempfile
 import time
 import requests
 import json
-import sounddevice as sd
-from scipy.io.wavfile import write
+from audio_recorder_streamlit import audio_recorder
 import numpy as np
 import uuid
 from deep_translator import GoogleTranslator
@@ -388,31 +387,7 @@ def transliterate_text(text, lang_code):
         return None
     return None
 
-def record_audio_file(duration=5, fs=16000):
-    """Record audio for a fixed duration using sounddevice"""
-    try:
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
-        sd.wait()  # Wait until recording is finished
-        
-        # Save as temporary file
-        timestamp = int(time.time())
-        unique_id = uuid.uuid4()
-        filename = f"temp_recording_{timestamp}_{unique_id}.wav"
-        temp_path = os.path.join(tempfile.gettempdir(), filename)
-        
-        # Convert to int16
-        recording_int16 = (recording * 32767).astype(np.int16)
-        
-        # Check for silence
-        max_amplitude = np.max(np.abs(recording_int16))
-        if max_amplitude < 500: # Threshold for silence
-            return None, True # Path, IsSilent
-            
-        write(temp_path, fs, recording_int16)
-        
-        return temp_path, False
-    except Exception as e:
-        return None, False
+
 
 def translate_text(text, source_lang, target_lang):
     """Translate text from source to target language"""
@@ -629,94 +604,81 @@ with tab2:
 
     st.markdown("---")
     st.markdown("### 🎙️ Live Voice Input")
+    st.info("Click the microphone icon below to start recording. Click again to stop.")
     
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        start_listening = st.button("🎤 Start Speaking", use_container_width=True, help="Click to start recording via microphone")
-    
-    if start_listening:
-        status_placeholder = st.empty()
-        status_placeholder.info("🎧 Preparing to listen...")
+    # Audio Recorder Component
+    audio_bytes = audio_recorder(
+        text="",      
+        recording_color="#e8b62c", 
+        neutral_color="#6aa36f",   
+        icon_name="microphone",
+        icon_size="2x",    
+    )
+
+    if audio_bytes:
+        st.markdown("### 🔊 Your Recording:")
+        st.audio(audio_bytes, format="audio/wav")
         
-        try:
-            # Using sounddevice for recording
-            status_placeholder.info("� Listening... Speak now (Recording for 5 seconds)...")
+        with st.spinner("Processing speech..."):
+            # Save to temporary file for SpeechRecognition
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+                tmp_file.write(audio_bytes)
+                tmp_file_path = tmp_file.name
             
-            # Record Audio
-            audio_path, is_silent = record_audio_file(duration=5)
-            
-            if is_silent:
-                status_placeholder.warning("⚠️ No sound detected! Please check your microphone settings or speak louder.")
-                time.sleep(3)
-                status_placeholder.empty()
-            
-            elif audio_path and os.path.exists(audio_path):
-                # Verify Recording by playing it back
-                st.markdown("### 🔊 Your Recording:")
-                st.audio(audio_path)
-                
-                status_placeholder.info("🔄 Processing speech...")
-                
-                # Recognize speech using AudioFile
+            try:
+                # Recognize speech
                 r = sr.Recognizer()
-                with sr.AudioFile(audio_path) as source:
+                with sr.AudioFile(tmp_file_path) as source:
                     audio_data = r.record(source)
                     
+                    # Use specific speech locale if available, else fallback to 2-letter
+                    lang_code_sr = INDIAN_LANG_SPEECH_CODES.get(speech_source_lang, speech_source_lang)
+                    
                     try:
-                        # Use specific speech locale if available, else fallback to 2-letter
-                        lang_code_sr = INDIAN_LANG_SPEECH_CODES.get(speech_source_lang, speech_source_lang)
-                        
                         recognized_text = r.recognize_google(audio_data, language=lang_code_sr)
                         
-                        status_placeholder.success("✅ Speech recognized!")
-                        time.sleep(1)
-                        status_placeholder.empty()
-                        
+                        st.success("✅ Speech recognized!")
                         st.markdown("### Recognized Text:")
                         st.markdown(f'<div class="translation-output">{recognized_text}</div>', unsafe_allow_html=True)
                         
                         # Translate
-                        with st.spinner("Translating..."):
-                             translated_text = translate_text(recognized_text, speech_source_lang, speech_target_lang)
-                             
-                             if translated_text:
-                                st.markdown("### Translated Text:")
-                                st.markdown(f'<div class="translation-output">{translated_text}</div>', unsafe_allow_html=True)
-                                
-                                # Audio output
-                                audio_fp = text_to_speech(translated_text, speech_target_lang)
-                                if audio_fp:
-                                    st.markdown("### Translation Audio:")
-                                    # Use st.audio with unique key to force refresh
-                                    st.audio(audio_fp, format='audio/mp3', start_time=0) # start_time=0 helps reset
-
-                                
-                                # Save to history
-                                st.session_state.translation_history.append({
-                                    'source': speech_source_lang_name,
-                                    'target': speech_target_lang_name,
-                                    'original': recognized_text,
-                                    'translated': translated_text,
-                                    'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    'type': 'Live Speech'
-                                })
-                                st.session_state.total_translations += 1
-                                
+                        translated_text = translate_text(recognized_text, speech_source_lang, speech_target_lang)
+                        
+                        if translated_text:
+                            st.markdown("### Translated Text:")
+                            st.markdown(f'<div class="translation-output">{translated_text}</div>', unsafe_allow_html=True)
+                            
+                            # Audio output
+                            audio_fp = text_to_speech(translated_text, speech_target_lang)
+                            if audio_fp:
+                                st.markdown("### Translation Audio:")
+                                st.audio(audio_fp, format='audio/mp3', start_time=0)
+                            
+                            # Save to history
+                            st.session_state.translation_history.append({
+                                'source': speech_source_lang_name,
+                                'target': speech_target_lang_name,
+                                'original': recognized_text,
+                                'translated': translated_text,
+                                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+                                'type': 'Live Speech'
+                            })
+                            st.session_state.total_translations += 1
+                            
                     except sr.UnknownValueError:
-                        status_placeholder.warning("Could not understand audio. Try speaking clearly.")
+                        st.warning("Could not understand audio. Try speaking clearly.")
                     except sr.RequestError as e:
-                        status_placeholder.error(f"Could not request results; {e}")
-                
+                        st.error(f"Could not request results; {e}")
+                        
+            except Exception as e:
+                st.error(f"Error processing audio: {str(e)}")
+            finally:
                 # Cleanup
-                try:
-                    os.unlink(audio_path)
-                except:
-                    pass
-            else:
-                status_placeholder.error("Failed to record audio. Please check microphone.")
-                    
-        except Exception as e:
-            status_placeholder.error(f"Error accessing microphone: {str(e)}")
+                if os.path.exists(tmp_file_path):
+                    try:
+                        os.unlink(tmp_file_path)
+                    except:
+                        pass
 
     if audio_file:
         st.markdown("### Uploaded Audio:")
